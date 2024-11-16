@@ -1,3 +1,4 @@
+// server/src/main.rs
 use std::net::UdpSocket;
 use std::collections::HashMap;
 
@@ -8,7 +9,7 @@ fn main() {
     println!("Server listening on {}", SERVER_ADDR);
 
     let mut buffer = [0u8; 1024];
-    let mut player_map: HashMap<u16, u8> = HashMap::new(); // Maps port to player number
+    let mut last_sequence: HashMap<u16, u32> = HashMap::new(); // Maps port to last received sequence number
 
     loop {
         match socket.recv_from(&mut buffer) {
@@ -16,28 +17,40 @@ fn main() {
                 let port = src.port();
                 let message = String::from_utf8_lossy(&buffer[..size]);
 
-                // Determine or assign the player number
-                let player_number = *player_map.entry(port).or_insert_with(|| {
-                    match port {
-                        8081 => 1,
-                        8082 => 2,
-                        8083 => 3,
-                        _ => {
-                            println!("Unknown player port: {}", port);
-                            0 // Unknown player
-                        }
-                    }
-                });
-
-                if player_number == 0 {
-                    println!("Received message '{}' from unknown port: {}", message, port);
+                if message == "connect" {
+                    println!("{} connected", port);
                     continue;
                 }
 
-                if message == "connect" {
-                    println!("P{} connected from {}", player_number, port);
+                let parts: Vec<&str> = message.split(':').collect();
+
+                if parts.len() != 2 {
+                    println!("Malformed message from {}: '{}'", port, message);
+                    continue;
+                }
+
+                let sequence: u32 = match parts[0].parse() {
+                    Ok(seq) => seq,
+                    Err(_) => {
+                        println!("Invalid sequence number from {}: '{}'", port, parts[0]);
+                        continue;
+                    }
+                };
+
+                let content = parts[1];
+                let last_seq = last_sequence.entry(port).or_insert(0);
+
+                if sequence <= *last_seq {
+                    println!("Out-of-order or duplicate packet from {}: sequence {}", port, sequence);
                 } else {
-                    println!("P{}: {}", player_number, message);
+                    *last_seq = sequence;
+                    println!("{}:{}", port, content);
+
+                    // Send an acknowledgment back to the client
+                    let ack_message = format!("ACK:{}", sequence);
+                    if let Err(e) = socket.send_to(ack_message.as_bytes(), src) {
+                        eprintln!("Failed to send ACK to {}: {}", src, e);
+                    }
                 }
             }
             Err(e) => {
